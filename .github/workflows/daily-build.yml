@@ -1,0 +1,66 @@
+name: Daily Build
+
+on:
+  schedule:
+    # 每天 UTC 18:00 执行，即北京时间次日 02:00
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set Describe
+        shell: bash
+        run: |
+          echo "describe=$(git describe --tags --always)" >> $GITHUB_ENV
+          echo "build_date=$(date -u +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      # 帮助文档为外部仓库内容，拉取失败时沿用仓库内的 Help.zip，不阻断构建
+      - name: Update Help
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          git clone --depth 1 -b master https://github.com/LTCatt/PCL2Help.git PCL2Help
+          Compress-Archive -Path PCL2Help\* -DestinationPath "Plain Craft Launcher 2\Resources\Help.zip" -Force
+          Remove-Item PCL2Help -Recurse -Force
+
+      - name: Inject Commit Hash
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}"
+          $path = "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
+          $content = Get-Content $path -Raw
+          $content = $content -replace 'Public Const CommitHash As String = ""', ('Public Const CommitHash As String = "' + $sha + '"')
+          Set-Content -Path $path -Value $content -NoNewline -Encoding utf8NoBOM
+
+      - name: Restore NuGet Packages
+        run: |
+          dotnet restore PCLCS\PCLCS.csproj
+          dotnet restore MeloongCore\Wpf\MeloongCore.Wpf.csproj
+
+      - name: Build
+        run: msbuild "Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj" -p:Configuration=Release -m
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PCL-Release-${{ env.build_date }}-${{ env.describe }}
+          path: |
+            Plain Craft Launcher 2\bin\Plain Craft Launcher 2.exe
+            Plain Craft Launcher 2\bin\Plain Craft Launcher 2.exe.config
+          retention-days: 7
+          if-no-files-found: error
